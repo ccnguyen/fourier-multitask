@@ -8,6 +8,7 @@ import densetorch as dt
 from config import *
 
 # model_options
+print(torch.cuda.is_available())
 ## encoder
 pretrained = True
 return_idx = [1, 2, 3, 4, 5, 6]
@@ -46,7 +47,8 @@ valloader = DataLoader(
 # model setup
 enc = dt.nn.mobilenetv2(pretrained=pretrained, return_idx=return_idx)
 dec = dt.nn.MTLWRefineNet(enc._out_c, collapse_ind, num_classes)
-model1 = nn.DataParallel(nn.Sequential(enc, dec).cuda())
+# model1 = nn.DataParallel(nn.Sequential(enc, dec).cuda())
+model1 = nn.Sequential(enc, dec).cuda()
 print("Model has {} parameters".format(dt.misc.compute_params(model1)))
 start_epoch, _, state_dict = saver.maybe_load(
     ckpt_path=ckpt_path, keys_to_load=["epoch", "best_val", "state_dict"],

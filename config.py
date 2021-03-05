@@ -10,7 +10,7 @@ seed = 42
 
 # Data settings
 crop_size = 400
-batch_size = 4
+batch_size = 1
 val_batch_size = 4
 num_classes = (40, 1)
 n_epochs = 1000
