@@ -1,5 +1,6 @@
 import torch, sys, pdb
 import torch.nn as nn
+import citorch
 
 class ConvBlock(nn.Module):
 
@@ -59,7 +60,7 @@ class UpsampleBlock(nn.Module):
 
 class UNet(nn.Module):
 
-    def __init__(self, channels, n_layers: int, norm_layer=None):
+    def __init__(self, channels, n_layers: int, norm_layer=None, fourier=False):
         super().__init__()
 
         # assert len(channels) == n_layers + 2, "The number of layers and the provided channels don't match."
@@ -96,15 +97,26 @@ class UNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
+        self.fourier = fourier
+
+
     def forward(self, x):
         features = []
         for i in range(self.n_layers):
             x, y = self.downblocks[i](x)
             features.append(y)
         x = self.bottom_block(x) # [1, 12, 25, 25]
+
+        if self.fourier:
+            x = citorch.stack_complex(x, torch.zeros_like(x))
+            x = citorch.fft(x)
+            x = torch.where(x > -100.0, x, torch.zeros_like(x))
+            x = citorch.ifft(x)
+            x = x[..., 0]
+
         dep = x
         seg = x
         for i in range(self.n_layers - 1, -1, -1):
             dep = self.upblocks_dep[i](dep, features[i])
             seg = self.upblocks_seg[i](seg, features[i])
-        return seg, dep
+        return seg, dep, x

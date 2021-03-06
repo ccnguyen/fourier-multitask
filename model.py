@@ -11,6 +11,7 @@ from unet import UNet
 from pytorch_lightning.core.lightning import LightningModule
 from dataio import transform_train, transform_val
 from config import *
+from sklearn.metrics import jaccard_score
 
 
 class InvHuberLoss(nn.Module):
@@ -41,7 +42,7 @@ class InvHuberLoss(nn.Module):
 
 
 class ImageUnet(nn.Module):
-    def __init__(self):
+    def __init__(self, fourier=False):
         super().__init__()
 
         base_ch = 3
@@ -52,7 +53,8 @@ class ImageUnet(nn.Module):
 
         self.net = nn.Sequential(
             UNet(channels=[base_ch, base_ch, 2 * base_ch, 2 * base_ch, 4 * base_ch, 4 * base_ch],
-                 n_layers=n_layers))
+                 n_layers=n_layers,
+                 fourier=fourier))
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -67,8 +69,10 @@ class ImageUnet(nn.Module):
         result = self.net(img)
         return result
 
+
 def to3(x):
     return torch.cat((x,x,x), dim=0).unsqueeze(0)
+
 
 class Model(LightningModule):
     def __init__(self, args):
@@ -76,10 +80,10 @@ class Model(LightningModule):
         self.save_hyperparameters(args)
         self.train_dataset = dt.data.MMDataset(data_file, data_dir, line_to_paths_fn, masks_names, transform=transform_train)
         self.val_dataset = dt.data.MMDataset(val_file, data_val_dir, line_to_paths_fn, masks_names, transform=transform_val)
-        self.encoder = ImageUnet()
-        self.seg_dec3 = nn.Conv2d(in_channels=3, out_channels=256, kernel_size=3, padding=1)
+        self.encoder = ImageUnet(fourier=args.fourier)
+        self.seg_dec = nn.Conv2d(in_channels=3, out_channels=256, kernel_size=3, padding=1)
 
-        self.depth_dec3 = nn.Conv2d(in_channels=3, out_channels=1, kernel_size=3, padding=1)
+        self.depth_dec = nn.Conv2d(in_channels=3, out_channels=1, kernel_size=3, padding=1)
         self.lr = args.lr
         self.seg_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
         self.depth_loss = InvHuberLoss(ignore_index=ignore_depth)
@@ -94,13 +98,25 @@ class Model(LightningModule):
     def get_depth_loss(self, result, gt):
         return self.depth_loss(result, gt)
 
+    def get_rmse(self, result, gt):
+        result = result.detach().cpu().numpy()
+        gt = gt.detach().cpu().numpy()
+        return np.sum((result - gt) ** 2)
+
+    def get_iou(self, result, gt):
+        result = result.detach().cpu().numpy()
+        gt = gt.detach().cpu().numpy()
+        return np.sum(jaccard_score(result.ravel(), gt.ravel(), average=None))
+
     def training_step(self, batch, batch_idx):
         x = batch['image'].float() # [1, 3, 400, 400], float64
         seg = batch['segm'] # [1, 400, 400], int64
         depth = batch['depth'] # [1, 400, 400], float32
-        seg_pred, dep_pred = self.encoder(x)
-        seg_pred = self.seg_dec3(seg_pred)
-        depth_pred = self.depth_dec3(dep_pred)
+        seg_pred, dep_pred, map = self.encoder(x)
+
+
+        seg_pred = self.seg_dec(seg_pred)
+        depth_pred = self.depth_dec(dep_pred)
 
         seg_loss = self.get_seg_loss(seg_pred, seg)
         depth_loss = self.get_depth_loss(depth_pred, depth)
@@ -109,12 +125,17 @@ class Model(LightningModule):
         total_loss = depth_loss + seg_loss
 
         x = x.float()
-
         seg = seg.float()
-
 
         seg_pred = torch.argmax(seg_pred, dim=1).float()
         depth_pred = depth_pred.squeeze(0)
+
+        self.log('rmse_depth', self.get_rmse(depth_pred, depth),
+                 on_step=True, on_epoch=True,
+                 prog_bar=False, logger=True)
+        self.log('iou_seg', self.get_iou(seg_pred, seg),
+                 on_step=True, on_epoch=True,
+                 prog_bar=False, logger=True)
 
 
         seg_pred = to3(seg_pred)
@@ -136,6 +157,8 @@ class Model(LightningModule):
                                            nrow=self.batch_size,
                                            normalize=False).cpu().detach().numpy()
         self.logger.experiment.add_image("pred", grid, self.steps)
+        self.logger.experiment.add_image("ft1", map[:, 0, :, :], self.steps)
+        self.logger.experiment.add_image("ft2", map[:, 1, :, :], self.steps)
         self.steps += 1
 
         self.log('train_loss', total_loss,
