@@ -9,6 +9,7 @@ import densetorch as dt
 from config import *
 from argparse import ArgumentParser
 
+
 # model_options
 print(torch.cuda.is_available())
 
